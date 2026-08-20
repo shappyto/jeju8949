@@ -133,6 +133,10 @@
             <i data-lucide="plus-circle" class="w-3.5 h-3.5 text-emerald-400"></i>
             <span>새 매물 등록</span>
           </button>
+          <button onclick="exportPropertiesToCode()" class="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition shadow" title="GitHub 영구 반영용 코드 복사">
+            <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+            <span class="hidden lg:inline">데이터 복사</span>
+          </button>
           <button onclick="openPasswordModal()" class="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition shadow" title="비밀번호 변경">
             <i data-lucide="settings" class="w-3.5 h-3.5"></i>
             <span class="hidden lg:inline">비번 변경</span>
@@ -759,9 +763,6 @@
       '조천읍': { lat: 33.5350, lng: 126.6340 }
     };
 
-    // 실시간 클라우드 DB 동기화 저장소 API
-    const CLOUD_STORAGE_URL = "https://kvdb.io/jeju8949tv_v2/properties";
-
     function formatAddressToRi(addr) {
       if (!addr) return '제주특별자치도';
       addr = addr.trim();
@@ -882,44 +883,63 @@
       return 0;
     }
 
+    // 주소 좌표 변환 함수 (무한 대기 방지 1.5초 안전 타임아웃 적용)
     function getCoordinatesFromAddress(address) {
       return new Promise((resolve) => {
+        let isResolved = false;
+        const timer = setTimeout(() => {
+          if (!isResolved) {
+            isResolved = true;
+            resolve(getJejuRegionFallback(address));
+          }
+        }, 1500);
+
         if (!address) {
+          clearTimeout(timer);
+          isResolved = true;
           resolve({ lat: 33.3800, lng: 126.5400 });
           return;
         }
 
-        if (typeof kakao !== 'undefined' && kakao.maps && kakao.maps.services && kakao.maps.services.Geocoder) {
-          const geocoder = new kakao.maps.services.Geocoder();
-          geocoder.addressSearch(address, function(result, status) {
-            if (status === kakao.maps.services.Status.OK && result.length > 0) {
-              resolve({ lat: parseFloat(result[0].y), lng: parseFloat(result[0].x) });
-              return;
-            }
-            const shortAddr = formatAddressToRi(address);
-            if (shortAddr && shortAddr !== address) {
-              geocoder.addressSearch(shortAddr, function(res2, st2) {
-                if (st2 === kakao.maps.services.Status.OK && res2.length > 0) {
-                  resolve({ lat: parseFloat(res2[0].y), lng: parseFloat(res2[0].x) });
-                  return;
-                }
-                resolve(getJejuRegionFallback(address));
-              });
-            } else {
-              resolve(getJejuRegionFallback(address));
-            }
-          });
-        } else {
-          fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}`)
-            .then(res => res.json())
-            .then(data => {
-              if (data && data.length > 0) {
-                resolve({ lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) });
+        try {
+          if (typeof kakao !== 'undefined' && kakao.maps && kakao.maps.services && kakao.maps.services.Geocoder) {
+            const geocoder = new kakao.maps.services.Geocoder();
+            geocoder.addressSearch(address, function(result, status) {
+              if (isResolved) return;
+              clearTimeout(timer);
+              isResolved = true;
+              if (status === kakao.maps.services.Status.OK && result && result.length > 0) {
+                resolve({ lat: parseFloat(result[0].y), lng: parseFloat(result[0].x) });
               } else {
                 resolve(getJejuRegionFallback(address));
               }
-            })
-            .catch(() => resolve(getJejuRegionFallback(address)));
+            });
+          } else {
+            fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}`)
+              .then(res => res.json())
+              .then(data => {
+                if (isResolved) return;
+                clearTimeout(timer);
+                isResolved = true;
+                if (data && data.length > 0) {
+                  resolve({ lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) });
+                } else {
+                  resolve(getJejuRegionFallback(address));
+                }
+              })
+              .catch(() => {
+                if (isResolved) return;
+                clearTimeout(timer);
+                isResolved = true;
+                resolve(getJejuRegionFallback(address));
+              });
+          }
+        } catch (err) {
+          if (!isResolved) {
+            clearTimeout(timer);
+            isResolved = true;
+            resolve(getJejuRegionFallback(address));
+          }
         }
       });
     }
@@ -979,39 +999,6 @@
     let mapMarkers = [];
     let markerDisplayMode = 'auto';
 
-    // 클라우드 서버에서 실시간 매물 데이터 자동 동기화
-    async function syncFromCloudDatabase() {
-      try {
-        const response = await fetch(CLOUD_STORAGE_URL);
-        if (response.ok) {
-          const cloudData = await response.json();
-          if (Array.isArray(cloudData) && cloudData.length > 0) {
-            properties = cloudData;
-            try {
-              localStorage.setItem('jeju_properties', JSON.stringify(properties));
-            } catch(e){}
-            applyFilters();
-            updateShowcaseVideos();
-          }
-        }
-      } catch (e) {
-        console.warn("Cloud DB fetch fallback to local data:", e);
-      }
-    }
-
-    // 클라우드 서버로 매물 데이터 실시간 저장
-    async function saveToCloudDatabase(data) {
-      try {
-        await fetch(CLOUD_STORAGE_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(data)
-        });
-      } catch (e) {
-        console.warn("Cloud DB save error:", e);
-      }
-    }
-
     function isAdminLoggedIn() {
       return sessionStorage.getItem('jeju_admin_auth') === 'true';
     }
@@ -1032,6 +1019,17 @@
         if (detailControls) { detailControls.classList.add('hidden'); detailControls.classList.remove('flex'); }
       }
       lucide.createIcons();
+    }
+
+    // GitHub 영구 반영용 데이터 코드 원클릭 복사
+    function exportPropertiesToCode() {
+      if (!isAdminLoggedIn()) return;
+      const codeSnippet = `const DEFAULT_INITIAL_PROPERTIES = ${JSON.stringify(properties, null, 2)};`;
+      navigator.clipboard.writeText(codeSnippet).then(() => {
+        alert('현재 등록된 모든 매물 데이터 코드가 복사되었습니다!\nGitHub index.html 파일의 DEFAULT_INITIAL_PROPERTIES 부분에 덮어씌우면 모든 방문자에게 영구 반영됩니다.');
+      }).catch(() => {
+        prompt('아래 코드를 복사하여 index.html의 DEFAULT_INITIAL_PROPERTIES 자리에 붙여넣으세요:', codeSnippet);
+      });
     }
 
     function setViewMode(mode) {
@@ -1342,6 +1340,7 @@
 
       if (view === 'map') {
         listPanel.classList.add('hidden');
+        listPanel.classList.remove('flex');
         mapPanel.classList.remove('hidden');
         btnMap.className = "px-4 py-2 rounded-full text-xs font-bold bg-sky-600 text-white flex items-center gap-1.5 transition shadow";
         btnList.className = "px-4 py-2 rounded-full text-xs font-bold text-slate-300 hover:text-white flex items-center gap-1.5 transition";
@@ -1352,15 +1351,22 @@
       } else {
         mapPanel.classList.add('hidden');
         listPanel.classList.remove('hidden');
-        listPanel.classList.remove('md:flex');
+        listPanel.classList.add('flex');
         btnList.className = "px-4 py-2 rounded-full text-xs font-bold bg-sky-600 text-white flex items-center gap-1.5 transition shadow";
         btnMap.className = "px-4 py-2 rounded-full text-xs font-bold text-slate-300 hover:text-white flex items-center gap-1.5 transition";
       }
     }
 
+    // 지도 및 UI 초기화 (매물 목록 우선 즉시 표시 보장)
     function initMap() {
       const container = document.getElementById('map');
       const defaultCenter = { lat: 33.3800, lng: 126.5400 };
+
+      // 매물 목록과 UI를 0.1초 만에 최우선 렌더링
+      renderPropertyList();
+      updateAdminUI();
+      updateShowcaseVideos();
+      lucide.createIcons();
 
       if (typeof kakao !== 'undefined' && kakao.maps && kakao.maps.load) {
         kakao.maps.load(() => {
@@ -1384,11 +1390,6 @@
       } else {
         initLeafletFallback(container, defaultCenter);
       }
-
-      renderPropertyList();
-      updateAdminUI();
-      updateShowcaseVideos();
-      lucide.createIcons();
     }
 
     function initLeafletFallback(container, defaultCenter) {
@@ -1672,7 +1673,7 @@
                   <span class="text-[10px] font-bold text-slate-700 bg-slate-100 px-1 py-0.2 rounded font-mono">No.${p.id}</span>
                   <span class="text-[10px] font-bold text-slate-500">${p.region}</span>
                   <span class="text-[9px] px-1 py-0.2 rounded font-semibold bg-slate-100 text-slate-600">${p.trade}</span>
-                  <span class="text-[9px] px-1 py-0.2 rounded bg-slate-50 text-slate-400 font-mono">${p.areaPy}평</span>
+                  <span class="text-[9px] px-1 py-0.2 rounded bg-slate-50 text-slate-400 font-mono">${p.areaPy || 0}평</span>
                 </div>
                 <h4 class="font-bold text-xs text-slate-900 truncate mt-0.5 group-hover:text-sky-600 transition leading-snug">${p.title}</h4>
                 <p class="font-extrabold text-xs sm:text-sm text-sky-600 mt-0.5">${p.price}</p>
@@ -1991,7 +1992,7 @@
       openAdminModal(activeDetailPropertyId);
     }
 
-    async function deleteCurrentProperty() {
+    function deleteCurrentProperty() {
       if (!isAdminLoggedIn()) { openLoginModal(); return; }
       if (!activeDetailPropertyId) return;
       if (confirm('이 매물을 정말로 삭제하시겠습니까?')) {
@@ -1999,9 +2000,6 @@
         try {
           localStorage.setItem('jeju_properties', JSON.stringify(properties));
         } catch(e){}
-        
-        // 클라우드 실시간 동기화 삭제
-        await saveToCloudDatabase(properties);
 
         alert('매물이 성공적으로 삭제되었습니다.');
         closeDetailModal();
@@ -2282,9 +2280,14 @@
       if (data.supplyAreaM2) calculatePyeong(data.supplyAreaM2, 'calc-supp');
     }
 
+    // 매물 저장 핸들러
     async function handlePropertySubmit(e) {
       e.preventDefault();
       if (!isAdminLoggedIn()) { openLoginModal(); return; }
+
+      const submitBtn = document.getElementById('form-submit-btn');
+      submitBtn.innerText = "저장 중...";
+      submitBtn.disabled = true;
 
       const originalId = document.getElementById('form-edit-original-id').value;
       const customId = document.getElementById('form-custom-id').value.trim();
@@ -2380,18 +2383,13 @@
         alert(`신규 매물번호 [${propData.id}] 등록 완료!`);
       }
 
-      // 로컬 스토리지 안전 저장 (용량 초과 오류 발생 시에도 메모리 유지 및 화면 정상 렌더링)
       try {
         localStorage.setItem('jeju_properties', JSON.stringify(properties));
       } catch (storageErr) {
-        console.warn("로컬 저장소 용량 초과로 메모리 상태를 우선 유지합니다.", storageErr);
+        console.warn("로컬 저장소 용량 초과 경고", storageErr);
       }
 
-      // 클라우드 동기화 전송
-      try {
-        await saveToCloudDatabase(properties);
-      } catch (cloudErr) {}
-
+      submitBtn.disabled = false;
       closeAdminModal();
       applyFilters();
       updateShowcaseVideos();
@@ -2412,7 +2410,6 @@
 
     window.onload = function() {
       initMap();
-      syncFromCloudDatabase();
     };
   </script>
 </body>
