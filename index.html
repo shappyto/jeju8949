@@ -956,7 +956,14 @@
       }
     ];
 
-    let properties = JSON.parse(localStorage.getItem('jeju_properties')) || DEFAULT_INITIAL_PROPERTIES;
+    // 안전한 로컬 저장소 데이터 로딩 (빈 배열이거나 오류 발생 시 기본 매물 보장)
+    let storedProperties = null;
+    try {
+      storedProperties = JSON.parse(localStorage.getItem('jeju_properties'));
+    } catch (err) {
+      storedProperties = null;
+    }
+    let properties = (Array.isArray(storedProperties) && storedProperties.length > 0) ? storedProperties : DEFAULT_INITIAL_PROPERTIES;
 
     let tempImages = [];
     let tempVideos = [];
@@ -980,7 +987,9 @@
           const cloudData = await response.json();
           if (Array.isArray(cloudData) && cloudData.length > 0) {
             properties = cloudData;
-            localStorage.setItem('jeju_properties', JSON.stringify(properties));
+            try {
+              localStorage.setItem('jeju_properties', JSON.stringify(properties));
+            } catch(e){}
             applyFilters();
             updateShowcaseVideos();
           }
@@ -1252,7 +1261,7 @@
           img.src = e.target.result;
           img.onload = function() {
             const canvas = document.createElement('canvas');
-            const maxDim = 800;
+            const maxDim = 600;
             let width = img.width;
             let height = img.height;
 
@@ -1269,7 +1278,7 @@
             const ctx = canvas.getContext('2d');
             ctx.drawImage(img, 0, 0, width, height);
 
-            const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.75);
+            const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.65);
             tempImages.push(compressedDataUrl);
             renderImagePreviews();
           };
@@ -1987,7 +1996,9 @@
       if (!activeDetailPropertyId) return;
       if (confirm('이 매물을 정말로 삭제하시겠습니까?')) {
         properties = properties.filter(item => String(item.id) !== String(activeDetailPropertyId));
-        localStorage.setItem('jeju_properties', JSON.stringify(properties));
+        try {
+          localStorage.setItem('jeju_properties', JSON.stringify(properties));
+        } catch(e){}
         
         // 클라우드 실시간 동기화 삭제
         await saveToCloudDatabase(properties);
@@ -2366,12 +2377,20 @@
         }
       } else {
         properties.unshift(propData);
-        alert(`신규 매물번호 [${propData.id}] 등록 완료! 실시간 클라우드 DB에 동기화되었습니다.`);
+        alert(`신규 매물번호 [${propData.id}] 등록 완료!`);
       }
 
-      // 로컬 스토리지 저장 및 클라우드 DB 자동 동기화 전송
-      localStorage.setItem('jeju_properties', JSON.stringify(properties));
-      await saveToCloudDatabase(properties);
+      // 로컬 스토리지 안전 저장 (용량 초과 오류 발생 시에도 메모리 유지 및 화면 정상 렌더링)
+      try {
+        localStorage.setItem('jeju_properties', JSON.stringify(properties));
+      } catch (storageErr) {
+        console.warn("로컬 저장소 용량 초과로 메모리 상태를 우선 유지합니다.", storageErr);
+      }
+
+      // 클라우드 동기화 전송
+      try {
+        await saveToCloudDatabase(properties);
+      } catch (cloudErr) {}
 
       closeAdminModal();
       applyFilters();
